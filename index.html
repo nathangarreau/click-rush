@@ -511,9 +511,12 @@ function compute(p, plan, news, month) {
   if (penalty) { penaltyLoss = after - Math.floor(after / 2); after = Math.floor(after / 2); }
   return { v, raw, total, conv, gain, lost, spent, before:p.customers, after, penalty, penaltyLoss, caughtBy, paid, coinsAfter:p.coins - spent };
 }
+const STAY_MAX = 2;
+const staysOf = (p, x) => Object.keys(p.owned).length + x.cards.filter(k => CARDS[k].type === 'stay').length;
 function planError(i) {
   const p = S.players[i], x = S.plan[i], news = S.news[S.month];
   const n = x.cards.length + (x.bh ? 1 : 0);
+  if (staysOf(p, x) > STAY_MAX) return 'Max 2 cards that stay for the whole game.';
   const cost = cardsCost(x, news) + (x.bh ? 1 : 0);
   if (n > 2) return 'Max 2 cards per month (Black Hat included).';
   if (cost > p.coins) return `Not enough coins: this costs ${cost}, you have ${p.coins}.`;
@@ -526,8 +529,8 @@ function planError(i) {
 function sheetHtml(k) {
   const L = LEARN[k]; if (!L) return '';
   let img = '', game = '';
-  if (CARDS[k]) { img = CARDS[k].img; game = `${pl(CARDS[k].cost, 'coin')} · ${CARDS[k].type === 'stay' ? 'stays on your side' : 'this month only'}. ${CARDS[k].fx}.`; }
-  else if (k.startsWith('bh_')) { const b = BH[k.slice(3)]; img = `cards/${k}.webp`; game = `+${b.v} visitors the month you take it. Costs ${pl(b.c, 'coin')}. From next month, roll the die every month: caught on ${dieWord(b.f)} (${dieWord(3)} during a Google Update). Caught = your customers are divided by 2.`; }
+  if (CARDS[k]) { img = CARDS[k].img; game = `${pl(CARDS[k].cost, 'coin')} · ${CARDS[k].type === 'stay' ? 'stays on your side (max 2 cards that stay for the whole game)' : 'this month only'}. ${CARDS[k].fx}.`; }
+  else if (k.startsWith('bh_')) { const b = BH[k.slice(3)]; img = `cards/${k}.webp`; game = `+${b.v} visitors the month you take it. Costs ${pl(b.c, 'coin')}. From next month, roll the die every month: caught on ${dieWord(b.f)} (${dieWord(3)} during a Google Update). Caught = your customers are divided by 2 and all your Black Hat cards go back under the deck.`; }
   else if (k.startsWith('ev_')) { img = `cards/${k}.webp`; game = NEWS[k.slice(3)].fx; }
   const blk = (cls, h, t) => t ? `<div class="blk ${cls}"><h3>${h}</h3><p>${t}</p></div>` : '';
   return `<div class="sh">
@@ -649,9 +652,10 @@ function stepPlay() {
     const r = compute(p, x, news, S.month);
     const cards = ORDER.map(k => {
       const owned = p.owned[k] != null, on = x.cards.includes(k), c = costOf(k, news);
-      const dis = owned || (!on && n >= 2);
+      const full = CARDS[k].type === 'stay' && !owned && !on && staysOf(p, x) >= STAY_MAX;
+      const dis = owned || (!on && n >= 2) || full;
       return `<div class="hwrap"><button class="hcard ${owned ? 'owned' : ''}" data-p="${i}" data-card="${k}" aria-pressed="${on}" ${dis ? 'disabled' : ''}>
-        <img src="${CARDS[k].img}" alt="">${CARDS[k].name}<br><span class="muted" style="font-weight:500">${owned ? 'on your side' : pl(c, 'coin')}</span></button>${infoBtn(k, CARDS[k].name)}</div>`;
+        <img src="${CARDS[k].img}" alt="">${CARDS[k].name}<br><span class="muted" style="font-weight:500">${owned ? 'on your side' : full ? 'max 2 stay' : pl(c, 'coin')}</span></button>${infoBtn(k, CARDS[k].name)}</div>`;
     }).join('');
     const avail = bhAvailable(i);
     const bhDis = !x.bh && (n >= 2 || !avail.length);
@@ -710,7 +714,7 @@ function stepScore() {
           ${news === 'crash' && r.raw ? `<span>Website Crash ÷ 2</span><span>${r.total}</span>` : ''}
           <span class="t">${r.total} visitors ÷ ${r.conv}</span><span class="t">${pl(r.gain, 'customer')}${news === 'blackfriday' && r.gain ? ' (×2)' : ''}</span></div>
         ${r.lost ? `<div class="small muted">${pl(r.lost, 'extra visitor')} lost: not enough for one more customer.</div>` : ''}
-        ${r.penalty ? `<div class="alert">Google caught your ${bhName(r.caughtBy)}! Customers divided by 2: −${r.penaltyLoss}.</div>` : ''}
+        ${r.penalty ? `<div class="alert">Google caught your ${bhName(r.caughtBy)}! Customers divided by 2: −${r.penaltyLoss}. All your Black Hat cards go back under the deck.</div>` : ''}
         <div class="pawn">${pawnSvg(i, 34)}<div style="flex:1"><div class="small muted">Move your pawn to</div><div class="big num">${r.after}${r.after >= 60 ? ` <span class="small">(2nd lap: ${r.after - 60})</span>` : ''}</div></div>
           ${up ? `<span class="lvl">★ ${lvAfter[1]}!</span>` : `<span class="small muted">${lvAfter[1]}</span>`}</div>
       </section>`;
@@ -731,6 +735,7 @@ function commit() {
     const x = S.plan[i], r = compute(p, x, news, S.month);
     x.cards.forEach(k => { if (CARDS[k].type === 'stay') p.owned[k] = S.month; });
     if (r.paid) p.bh.push({ k:x.bhk, m:S.month });
+    if (r.penalty) p.bh = [];   // caught: all Black Hat cards go back under the deck
     p.coins = r.coinsAfter; p.customers = r.after;
     p.hist.push({ m:S.month, news, cards:x.cards.slice(), bh:r.paid ? x.bhk : null, inf:x.inf, v:r.v, total:r.total, gain:r.gain, lost:r.lost, spent:r.spent, penalty:r.penalty, penaltyLoss:r.penaltyLoss, after:r.after });
   });
@@ -831,7 +836,7 @@ function learn() {
   const tabs = [['channel','Channel cards'],['bh','Black Hat'],['news','Market News'],['words','Marketing words']];
   const row = (k, img, title, sub) => `<button class="lrow" data-info="${k}">${img ? `<img src="${img}" alt="">` : ''}<span style="flex:1;min-width:0"><b>${title}</b><small>${sub}</small></span><span class="chev" aria-hidden="true">›</span></button>`;
   let body = '';
-  if (learnTab === 'channel') body = `<p class="small muted" style="margin:0 0 4px">The 6 ways to bring visitors to your website. The first 3 stay, the last 3 work for one month.</p>` + ORDER.map(k => row(k, CARDS[k].img, `${CARDS[k].name}`, LEARN[k].full)).join('');
+  if (learnTab === 'channel') body = `<p class="small muted" style="margin:0 0 4px">The 6 ways to bring visitors to your website. The first 3 stay (but you can keep only 2 of them for the whole game), the last 3 work for one month.</p>` + ORDER.map(k => row(k, CARDS[k].img, `${CARDS[k].name}`, LEARN[k].full)).join('');
   else if (learnTab === 'bh') body = `<p class="small muted" style="margin:0 0 4px"><b>Black hat</b> = tricks that break the rules of Google or social networks to get fast results. Fast… and risky. Here is why.</p>` + BHORDER.map(k => row('bh_' + k, `cards/bh_${k}.webp`, LEARN['bh_' + k].title, LEARN['bh_' + k].full)).join('');
   else if (learnTab === 'news') body = `<p class="small muted" style="margin:0 0 4px">Real events that change the market, for every brand at once.</p>` + Object.keys(NEWS).map(k => row('ev_' + k, `cards/ev_${k}.webp`, NEWS[k].name, LEARN['ev_' + k].full)).join('');
   else body = `<dl>${TERMS.map(t => `<dt>${t[1]}</dt><dd>${t[2]}</dd>`).join('')}</dl>`;
